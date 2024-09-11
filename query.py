@@ -6,12 +6,21 @@ from langchain_core.output_parsers import StrOutputParser
 from langchain_core.runnables import RunnablePassthrough
 from langchain.prompts.chat import ChatPromptTemplate, HumanMessagePromptTemplate
 from langchain.prompts import PromptTemplate
+from openai import OpenAI
 import warnings
 import argparse
 import os
 import psycopg
 import json
 import params
+
+# Global debug mode flag
+debug_mode = False  # Set to False to disable debug printing
+
+def debug_print(*args, **kwargs):
+    """Custom debug print function that behaves like print() but only prints when debug_mode is True."""
+    if debug_mode:
+        print(*args, **kwargs)
 
 
 mongodb_conn_string = os.getenv("MONGODB_CONN_STRING")
@@ -26,13 +35,11 @@ args = parser.parse_args()
 
 query = args.question
 
-print("\nYour question:")
-print("-------------")
-print(query)
+debug_print(f"User question: {query}\n")
 
 # Connect to MongoDB Atlas
-client = MongoClient(mongodb_conn_string)
-db = client[params.db_name]
+mongo_client = MongoClient(mongodb_conn_string)
+db = mongo_client[params.db_name]
 collection = db[params.collection_name]
 
 ai_model = params.ai_model
@@ -52,7 +59,7 @@ vectorStore = MongoDBAtlasVectorSearch(
     relevance_score_fn="cosine"  # Use cosine similarity
 )
 
-print(f"User question: {query}\n")
+
 
 
 ################################
@@ -64,20 +71,20 @@ def get_similarity_search():
   # Perform the similarity search
   similar_docs = vectorStore.similarity_search(query=query, include_scores=True)
 
-  print("\nQuery Response:")
-  print("---------------")
+  debug_print("\nQuery Response:")
+  debug_print("---------------")
 
   # Access the closest matching document
   if similar_docs:
       # Iterate through each document and print its content
       for i, doc in enumerate(similar_docs):
-          print(f"Doc {i+1}: {doc.page_content}\n\n")
-          print(doc.metadata["score"], end="\n\n\n")
+          debug_print(f"Doc {i+1}: {doc.page_content}\n\n")
+          debug_print(doc.metadata["score"], end="\n\n\n")
 
-      closest_match = similar_docs[0]
-      # print("Closest Match:", closest_match)
+      # closest_match = similar_docs[0]
+      # debug_print("Closest Match:", closest_match)
   else:
-      print("No matching document found.")
+      debug_print("No matching document found.")
 
 
 
@@ -183,19 +190,19 @@ def get_second_prompt():
 
 
 def format_docs(docs):
-    # print("\nRetriver:")
-    # print("---------------")
+    # debug_print("\nRetriver:")
+    # debug_print("---------------")
 
     # for i, doc in enumerate(docs):
-    #     print(f"Doc {i+1}: {doc.page_content}\n\n")
-    #     print(doc.metadata, end="\n\n\n")
+    #     debug_print(f"Doc {i+1}: {doc.page_content}\n\n")
+    #     debug_print(doc.metadata, end="\n\n\n")
 
     return "\n\n".join(
       [f"{doc.page_content}" for doc in docs]
     )
 
 
-rag_chain = (
+first_rag_chain = (
     {"context": retriever | format_docs, "question": RunnablePassthrough()}
     | prompt
     | llm
@@ -203,26 +210,27 @@ rag_chain = (
 )
 
 
-first_response = rag_chain.invoke(query)
+first_response = first_rag_chain.invoke(query)
 
-print("\nRAG Chain Response:")
-print("-------------------")
-print(first_response)
+debug_print("\n First RAG Chain Response:")
+debug_print("-------------------")
+debug_print(first_response)
 
 
 second_prompt = get_second_prompt()
 
-items_chain = (
+second_rag_chain = (
     {"context": RunnablePassthrough()}
     | second_prompt
     | llm
     | StrOutputParser()
 )
 
-second_response = items_chain.invoke(first_response)
+second_response = second_rag_chain.invoke(first_response)
 
-print(second_response)
-
+debug_print("\n Second RAG Chain Response:")
+debug_print("-------------------")
+debug_print(second_response)
 
 
 pg_connection = psycopg.connect(
@@ -233,8 +241,8 @@ pg_connection = psycopg.connect(
       port="5432"
   )
 
-# Function to process the response
-def process_fashion_suggestion(response_json, pg_connection):
+
+def get_similar_fashion_descriptions(response_json, pg_connection):
     # Parse the JSON response
     response_data = json.loads(response_json)
 
@@ -252,8 +260,8 @@ def process_fashion_suggestion(response_json, pg_connection):
         item_embedding = embeddings.embed_query(item)
         similar_items = search_similar_items(pg_connection, item_embedding)
 
-        print(item, end="\n\n")
-        print(similar_items)
+        debug_print(item, end="\n\n")
+        debug_print(similar_items)
 
         search_results.append({
             "item": item,
@@ -264,15 +272,13 @@ def process_fashion_suggestion(response_json, pg_connection):
     return search_results
 
 
-
-# Function to perform pgvector search in PostgreSQL using psycopg3
 def search_similar_items(pg_connection, item_embedding):
     # Convert the embedding to a string in PostgreSQL array format
     embedding_str = '[' + ', '.join(map(str, item_embedding)) + ']'
 
     try:
-        # Connect to the PostgreSQL database
-        with pg_connection.cursor() as cursor:
+        # Connect to the PostgreSQL, use DictRow factory to get results as dictionaries
+        with pg_connection.cursor(row_factory=psycopg.rows.dict_row) as cursor:
             # Perform an embedding search using pgvector
 
             # For cosine similarity, the range is [-1, 1], where:
@@ -297,10 +303,11 @@ def search_similar_items(pg_connection, item_embedding):
             cursor.execute(query, (embedding_str, embedding_str,))
             results = cursor.fetchall()
 
-            print(results)
+            debug_print(results)
 
-            # Extract similar product description id from the results
-            similar_items = [row[0] for row in results]
+            # with cosine distance > 0.6, the items appear irrelevant, so we filter them out
+            similar_items = [row['id'] for row in results if row['distance'] <= 0.6]
+
             return similar_items
 
     except Exception as e:
@@ -309,59 +316,90 @@ def search_similar_items(pg_connection, item_embedding):
 
 
 
+# Generate SQL query using the AI model
+def generate_sql_via_ai(description_id, gender):
+    debug_print("description_id: ", description_id)
+    debug_print("gender: ", gender)
 
-def get_product_display_name(conn, description_id, gender):
-    # Map gender input to the corresponding gender in the database
-    gender_filter = []
+    gender_filter = ""
 
     if gender == "male":
-        gender_filter = ['Men', 'Boys', 'Unisex']
+        gender_filter = " and, filter 'gender' to include 'Men', 'Boys', and 'Unisex'."
     elif gender == "female":
-        gender_filter = ['Women', 'Girls', 'Unisex']
+        gender_filter = " and, filter 'gender' to include 'Women', 'Girls', and 'Unisex'."
     elif gender == "NA":
-        gender_filter = ['Unisex', 'Men', 'Women', 'Boys', 'Girls']
-  
-    # Query to get the product display name using the description_id
-    query = """
-        SELECT product_display_name
-        FROM products
-        WHERE
-          description_id = %s
-          AND gender = ANY(%s)
-        ORDER BY year DESC
-        LIMIT 1;
-    """
-    with conn.cursor() as cur:
-        cur.execute(query, (description_id, gender_filter))
-        result = cur.fetchone()  # Fetch the first result
-        if result:
-            return result[0]  # Return the product_display_name
-        else:
-            return None  # Return None if no result is found
+        gender_filter = ""
+
+    # Construct a natural language instruction for the AI model
+    instruction = f"""
+    You are tasked with generating an SQL query for a PostgreSQL table named 'products'. The table has the following fields:
+
+    - id: integer (Primary Key)
+    - product_id: integer
+    - product_display_name: string
+    - description_id: integer
+    - year: integer
+    - gender: string (values: 'Women', 'Men', 'Boys', 'Girls', 'Unisex')
+
+    The query should retrieve one record where 'description_id' matches {description_id}
+    {gender_filter}
+
+    The query should only return these fields: 'id', 'product_id', 'product_display_name'.
+    The result should be ordered by 'year' in descending order and limited to 1 record.
+
+    Provide only the SQL query in plain text, without any explanation, formatting or new lines.
+"""
+
+    debug_print(instruction)
+
+    completion = OpenAI().chat.completions.create(
+      model="gpt-4o-mini",
+      messages=[
+        {"role": "system", "content": "You are a helpful assistant."},
+        {"role": "user", "content": instruction}
+      ]
+    )
+
+    sql_query = completion.choices[0].message.content
+    debug_print(sql_query)
+
+    return sql_query
 
 
-def process_suggestions(conn, search_results, gender):
-    product_suggestions = []  # This will store the product_display_name for each suggestion
+def retrieve_product(conn, description_id, gender):
+    sql_query = generate_sql_via_ai(description_id, gender)
+
+    # Execute the AI-generated SQL query, using dict_row to return results as a dictionary
+    with conn.cursor(row_factory=psycopg.rows.dict_row) as cur:
+        cur.execute(sql_query)
+        result = cur.fetchone()
+
+    # Return result as a dictionary, or None if no record is found
+    return result if result else None
+
+
+
+def get_similar_fashion_products(conn, search_results, gender):
+    product_suggestions = []
     
-    # Loop through search_results
     for result in search_results:
         item = result["item"]
         similar_items = result["similar_items"]
-        
-        # Get the first matching ID from similar_items
-        if similar_items:
-            first_id = similar_items[0]  # Assuming similar_items is an array of IDs
 
-            # Use the first_id to get the product_display_name from the products table
-            product_display_name = get_product_display_name(conn, first_id, gender)
-            
-            if product_display_name:
-                # Add the product display name to the suggestions list
-                product_suggestions.append({
-                    "item": item,
-                    "suggestion": product_display_name
-                })
-    
+        # get the first similar item, if found
+        if similar_items:
+            for description_id in similar_items:
+                # Try to retrieve the product based on description_id and gender
+                product = retrieve_product(conn, description_id, gender)
+
+                # If a valid product is found, break the loop and return it
+                if product:
+                    product_suggestions.append({
+                        "item": item,
+                        "suggestion": product
+                    })
+                    break
+
     return product_suggestions  # Return the list of product suggestions
 
 
@@ -375,35 +413,29 @@ if response_data.get("is_fashion_suggestion") == "no":
 
 gender = response_data.get("gender")
 
-search_results = process_fashion_suggestion(second_response, pg_connection)
+# Step 1: Vector embedding search in product_descriptions table
+search_results = get_similar_fashion_descriptions(second_response, pg_connection)
 
-# Process the search results and get product suggestions
-product_suggestions = process_suggestions(pg_connection, search_results, gender)
+# Step 2: Product lookup in products table based on description_id from step 1
+product_suggestions = get_similar_fashion_products(pg_connection, search_results, gender)
 
 
 # Gather the suggested product names
-suggestions = [suggestion['suggestion'] for suggestion in product_suggestions]
+suggestions = [suggestion.get("suggestion") for suggestion in product_suggestions]
 
 # Format the output for the end user
 print(f"{first_response}\n")
-print("We recommend the following items:\n")
+print("Our top picks for you:\n")
 
 # Print each suggested product in a numbered list
 for idx, suggestion in enumerate(suggestions, 1):
-    print(f"{idx}. {suggestion}")
+    product_id = suggestion.get("product_id")
+    product_display_name = suggestion.get("product_display_name")
+
+    print(f"{idx}. {product_display_name}")
 
 
 
-
-
-
-
-
-
-
-
-
-# Close connections
-client.close()
-
+# Close DB connections
+mongo_client.close()
 pg_connection.close()
