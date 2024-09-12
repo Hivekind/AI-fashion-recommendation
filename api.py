@@ -8,14 +8,25 @@ from langchain.prompts.chat import ChatPromptTemplate, HumanMessagePromptTemplat
 from langchain.prompts import PromptTemplate
 from openai import OpenAI
 import warnings
-import argparse
 import os
 import psycopg
 import json
 import params
+from flask import url_for
 
 # Global debug mode flag
 debug_mode = False  # Set to False to disable debug printing
+
+
+# Filter out the UserWarning from langchain
+warnings.filterwarnings("ignore", category=UserWarning, module="langchain.chains.llm")
+
+mongodb_conn_string = os.getenv("MONGODB_CONN_STRING")
+
+ai_model = params.ai_model
+vector_dimension = params.vector_dimension
+index_name = params.index_name
+
 
 def debug_print(*args, **kwargs):
     """Custom debug print function that behaves like print() but only prints when debug_mode is True."""
@@ -23,51 +34,159 @@ def debug_print(*args, **kwargs):
         print(*args, **kwargs)
 
 
-mongodb_conn_string = os.getenv("MONGODB_CONN_STRING")
+def process_user_query(query):
+  debug_print(f"User question: {query}\n")
 
-# Filter out the UserWarning from langchain
-warnings.filterwarnings("ignore", category=UserWarning, module="langchain.chains.llm")
+  llm = ChatOpenAI(model="gpt-4o-mini")
 
-# Process arguments
-parser = argparse.ArgumentParser(description='Fashion Shop Assistant')
-parser.add_argument('-q', '--question', help="The question to ask")
-args = parser.parse_args()
+  # openAI embedding model
+  embeddingModel = OpenAIEmbeddings(model=ai_model, dimensions=vector_dimension)
 
-query = args.question
+  first_response = first_RAG_chain(query, llm, embeddingModel)
 
-debug_print(f"User question: {query}\n")
+  second_response = second_RAG_chain(first_response, llm)
 
-# Connect to MongoDB Atlas
-mongo_client = MongoClient(mongodb_conn_string)
-db = mongo_client[params.db_name]
-collection = db[params.collection_name]
+  final_response = process_fashion_suggestion(first_response, second_response, embeddingModel)
 
-ai_model = params.ai_model
-vector_dimension = params.vector_dimension
-index_name = params.index_name
-
-# openAI embedding model
-embeddings = OpenAIEmbeddings(model=ai_model, dimensions=vector_dimension)
-
-# Initialize MongoDBAtlasVectorSearch with correct keys
-vectorStore = MongoDBAtlasVectorSearch(
-    collection=collection,
-    embedding=embeddings,  # Your embedding model
-    text_key="text",  # Field in MongoDB for the text you want to retrieve
-    embedding_key="embedding",  # Field in MongoDB for the stored embeddings
-    index_name=index_name,  # Name of Vector Index in MongoDB Atlas
-    relevance_score_fn="cosine"  # Use cosine similarity
-)
+  return final_response
 
 
 
+############################
+# 1st RAG chain: MongoDBAtlasVectorSearch -> format_docs -> prompt -> llm -> StrOutputParser
+############################
 
-################################
-# get relevant docs from MongoDB
-################################
+def first_RAG_chain(query, llm, embeddingModel):
+  # Connect to MongoDB Atlas
+  mongo_client = MongoClient(mongodb_conn_string)
+  db = mongo_client[params.db_name]
+  collection = db[params.collection_name]
+
+  # Initialize MongoDBAtlasVectorSearch with correct keys
+  vectorStore = MongoDBAtlasVectorSearch(
+      collection=collection,
+      embedding=embeddingModel,  # Your embedding model
+      text_key="text",  # Field in MongoDB for the text you want to retrieve
+      embedding_key="embedding",  # Field in MongoDB for the stored embeddings
+      index_name=index_name,  # Name of Vector Index in MongoDB Atlas
+      relevance_score_fn="cosine"  # Use cosine similarity
+  )
+
+  search_kwargs = {
+      "include_scores": True,
+  }
+  retriever = vectorStore.as_retriever(search_kwargs=search_kwargs)
+
+  first_rag_chain = (
+      {"context": retriever | format_docs, "question": RunnablePassthrough()}
+      | prompt
+      | llm
+      | StrOutputParser()
+  )
+
+  first_response = first_rag_chain.invoke(query)
+  mongo_client.close()
+
+  debug_print("\n First RAG Chain Response:")
+  debug_print("-------------------")
+  debug_print(first_response)
+
+  return first_response
 
 
-def get_similarity_search():
+
+############################
+# 2nd RAG chain: RunnablePassthrough -> second_prompt -> llm -> StrOutputParser
+############################
+
+def second_RAG_chain(first_response, llm):
+  second_prompt = get_second_prompt()
+
+  second_rag_chain = (
+      {"context": RunnablePassthrough()}
+      | second_prompt
+      | llm
+      | StrOutputParser()
+  )
+
+  second_response = second_rag_chain.invoke(first_response)
+
+  debug_print("\n Second RAG Chain Response:")
+  debug_print("-------------------")
+  debug_print(second_response)
+  
+  return second_response
+
+
+############################
+# process the fashion suggestion
+############################
+
+def process_fashion_suggestion(first_response, second_response, embeddingModel):
+  # Parse the JSON response
+  response_data = json.loads(second_response)
+  gender = response_data.get("gender")
+
+  # not fashion suggestion related, return as is
+  if response_data.get("is_fashion_suggestion") == "no":
+      print(first_response)
+      return { "response" : first_response }
+
+  pg_connection = psycopg.connect(
+      dbname="sales_data",
+      user="postgres",
+      password="example",
+      host="localhost",
+      port="5432"
+  )
+
+  # Step 1: Vector embedding search in product_descriptions table
+  search_results = get_similar_fashion_descriptions(second_response, pg_connection, embeddingModel)
+
+  # Step 2: Product lookup in products table based on description_id from step 1
+  product_suggestions = get_similar_fashion_products(pg_connection, search_results, gender)
+
+  pg_connection.close()
+
+  # Gather the suggested product names
+  suggestions = [suggestion.get("suggestion") for suggestion in product_suggestions]
+
+  final_response = format_response(first_response, suggestions)
+  debug_print(final_response)
+
+  return final_response
+
+
+# Format the response with the assistant's response and product suggestions
+def format_response(first_response, suggestions):
+    # Format the main response and suggestions
+    final_response = {}
+    
+    # Add the assistant's response
+    final_response["response"] = first_response
+
+    # Add the product suggestions
+    final_response["items"] = []
+    
+    for idx, suggestion in enumerate(suggestions, 1):
+        # SY: TODO: need this to show product image ....
+        product_id = suggestion.get("product_id")
+
+        product_display_name = suggestion.get("product_display_name")
+        final_response["items"].append({
+            "index": idx,
+            "name": product_display_name,
+            "image_url": url_for('static', filename=f'images/{product_id}.jpg', _external=True)
+        })
+
+    return final_response
+
+
+
+
+
+# SY: unused now ...
+def get_similarity_search(vectorStore, query):
   # Perform the similarity search
   similar_docs = vectorStore.similarity_search(query=query, include_scores=True)
 
@@ -88,17 +207,7 @@ def get_similarity_search():
 
 
 
-###################
-# Set up RAG chain
-###################
 
-llm = ChatOpenAI(model="gpt-4o-mini")
-
-search_kwargs = {
-    "include_scores": True,
-}
-
-retriever = vectorStore.as_retriever(search_kwargs=search_kwargs)
 
 
 
@@ -187,8 +296,6 @@ def get_second_prompt():
 
 
 
-
-
 def format_docs(docs):
     # debug_print("\nRetriver:")
     # debug_print("---------------")
@@ -202,47 +309,8 @@ def format_docs(docs):
     )
 
 
-first_rag_chain = (
-    {"context": retriever | format_docs, "question": RunnablePassthrough()}
-    | prompt
-    | llm
-    | StrOutputParser()
-)
 
-
-first_response = first_rag_chain.invoke(query)
-
-debug_print("\n First RAG Chain Response:")
-debug_print("-------------------")
-debug_print(first_response)
-
-
-second_prompt = get_second_prompt()
-
-second_rag_chain = (
-    {"context": RunnablePassthrough()}
-    | second_prompt
-    | llm
-    | StrOutputParser()
-)
-
-second_response = second_rag_chain.invoke(first_response)
-
-debug_print("\n Second RAG Chain Response:")
-debug_print("-------------------")
-debug_print(second_response)
-
-
-pg_connection = psycopg.connect(
-      dbname="sales_data",
-      user="postgres",
-      password="example",
-      host="localhost",
-      port="5432"
-  )
-
-
-def get_similar_fashion_descriptions(response_json, pg_connection):
+def get_similar_fashion_descriptions(response_json, pg_connection, embeddingModel):
     # Parse the JSON response
     response_data = json.loads(response_json)
 
@@ -254,12 +322,12 @@ def get_similar_fashion_descriptions(response_json, pg_connection):
     # Extract items from the response
     items = response_data.get("items", [])
     search_results = []
-    
-    print("Items: ", items, end="\n\n")
+
+    print("\n\nItems: ", items, end="\n\n")
 
     # Loop through each item and perform a pgvector search in the PostgreSQL table
     for item in items:
-        item_embedding = embeddings.embed_query(item)
+        item_embedding = embeddingModel.embed_query(item)
         similar_items = search_similar_items(pg_connection, item_embedding)
 
         debug_print(item, end="\n\n")
@@ -403,41 +471,3 @@ def get_similar_fashion_products(conn, search_results, gender):
                     break
 
     return product_suggestions  # Return the list of product suggestions
-
-
-
-response_data = json.loads(second_response)
-
-# if is not related to fashion suggestion, then output the response as is
-if response_data.get("is_fashion_suggestion") == "no":
-    print(first_response)
-    exit()
-
-gender = response_data.get("gender")
-
-# Step 1: Vector embedding search in product_descriptions table
-search_results = get_similar_fashion_descriptions(second_response, pg_connection)
-
-# Step 2: Product lookup in products table based on description_id from step 1
-product_suggestions = get_similar_fashion_products(pg_connection, search_results, gender)
-
-
-# Gather the suggested product names
-suggestions = [suggestion.get("suggestion") for suggestion in product_suggestions]
-
-# Format the output for the end user
-print(f"{first_response}\n")
-print("Our top picks for you:\n")
-
-# Print each suggested product in a numbered list
-for idx, suggestion in enumerate(suggestions, 1):
-    product_id = suggestion.get("product_id")
-    product_display_name = suggestion.get("product_display_name")
-
-    print(f"{idx}. {product_display_name}")
-
-
-
-# Close DB connections
-mongo_client.close()
-pg_connection.close()

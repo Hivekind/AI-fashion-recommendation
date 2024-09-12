@@ -13,3 +13,5 @@ psycopg[binary]
 langchain_postgres
 langchain_core
 langchain_openai
+
+Flask

@@ -1,0 +1,124 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Fashion AI Assistant</title>
+    <style>
+        html, body {
+            height: 100%; /* Ensure the page height is 100% */
+            margin: 0;
+            display: flex;
+            flex-direction: column;
+        }
+
+        body {
+            display: flex;
+            flex-direction: column;
+            margin-left: 20px;
+            margin-right: 20px;
+        }
+
+        #chat-window {
+            flex: 1; /* Take up all available vertical space */
+            border: 1px solid #ccc;
+            overflow-y: scroll;
+            padding: 10px;
+            margin-bottom: 15px;
+        }
+
+        /* Add spacing between individual messages */
+        .message {
+            margin-bottom: 15px;
+        }
+
+        /* Adjust input and button layout */
+        #input-container {
+            display: flex;
+            /* width: 100%; */
+            padding: 10px;
+            background-color: #f1f1f1;
+            margin-bottom: 40px;
+        }
+
+        #query {
+            flex: 1;
+            padding: 10px;
+        }
+
+        button {
+            padding: 10px;
+            margin-left: 20px;
+        }
+    </style>
+</head>
+<body>
+  <h1>Fashion AI Assistant</h1>
+  <div id="chat-window"></div>
+  <div id="input-container">
+      <input type="text" id="query" placeholder="Enter your query">
+      <button onclick="sendMessage()">Send</button>
+  </div>
+
+  <script>
+      // Trigger sendMessage() when pressing Enter key
+      document.getElementById('query').addEventListener('keydown', function(event) {
+        if (event.key === 'Enter') {
+            sendMessage();
+        }
+      });
+
+      function sendMessage() {
+          const query = document.getElementById('query').value;
+          const chatWindow = document.getElementById('chat-window');
+
+          // Check if query is empty to avoid sending empty messages
+          if (!query.trim()) {
+              return; // Exit if the input is empty
+          }
+
+          // Append user message
+          const userMessage = document.createElement('div');
+          userMessage.className = 'message';  // Apply spacing class
+          userMessage.innerHTML = `<strong>User:</strong> ${query}`;
+          chatWindow.appendChild(userMessage);
+
+          // Send request to Flask
+          fetch('/query', {
+              method: 'POST',
+              headers: {
+                  'Content-Type': 'application/json'
+              },
+              body: JSON.stringify({ query })
+          })
+          .then(response => response.json())
+          .then(data => {
+              // Append assistant's response
+              const assistantMessage = document.createElement('div');
+              assistantMessage.className = 'message';  // Apply spacing class
+              assistantMessage.innerHTML = `<strong>Assistant:</strong> ${data.response}`;
+              chatWindow.appendChild(assistantMessage);
+
+              // If there are any suggestions, display them
+              if (data.items && data.items.length > 0) {
+                  const suggestionHeader = document.createElement('div');
+                  suggestionHeader.className = 'message';  // Apply spacing class
+                  suggestionHeader.innerHTML = `<strong>Our top picks for you:</strong>`;
+                  chatWindow.appendChild(suggestionHeader);
+
+                  data.items.forEach(item => {
+                      const suggestionItem = document.createElement('div');
+                      suggestionItem.className = 'message';  // Apply spacing class
+                      suggestionItem.innerHTML = `${item.index}. ${item.name} <br> <img src="${item.image_url}" alt="${item.name}" style="width: 100px;">`;
+                      chatWindow.appendChild(suggestionItem);
+                  });
+              }
+
+              // Clear the input field
+              document.getElementById('query').value = '';
+              chatWindow.scrollTop = chatWindow.scrollHeight;
+          });
+      }
+  </script>
+</body>
+</html>
