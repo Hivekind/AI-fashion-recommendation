@@ -174,3 +174,44 @@ python app.py
 ```
 
 Then open the browser and go to http://localhost:5000/
+
+
+## Managing Image Files with Git LFS
+
+We use Git LFS to manage a large number of small image files in this repository.
+
+### Initial Setup
+- Install Git LFS:
+
+```bash
+# for macOS
+brew install git-lfs
+
+# for Ubuntu
+sudo apt install git-lfs
+```
+
+- Set up Git LFS to track image files:
+
+```bash
+# Initialize Git LFS
+git lfs install
+
+# Track image files
+git lfs track "*.jpg" "*.png" "*.gif"
+
+# Add and commit
+git add .gitattributes
+git add .
+git commit -m "Add images and track with Git LFS"
+
+# Push changes
+git push origin main
+```
+
+### For Cloning the Repo
+Anyone cloning this repo must install Git LFS first, then clone:
+
+```bash
+git clone <repo-url>
+```
