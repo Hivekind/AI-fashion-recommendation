@@ -185,26 +185,6 @@ def format_response(first_response, suggestions):
 
 
 
-# SY: unused now ...
-def get_similarity_search(vectorStore, query):
-  # Perform the similarity search
-  similar_docs = vectorStore.similarity_search(query=query, include_scores=True)
-
-  debug_print("\nQuery Response:")
-  debug_print("---------------")
-
-  # Access the closest matching document
-  if similar_docs:
-      # Iterate through each document and print its content
-      for i, doc in enumerate(similar_docs):
-          debug_print(f"Doc {i+1}: {doc.page_content}\n\n")
-          debug_print(doc.metadata["score"], end="\n\n\n")
-
-      # closest_match = similar_docs[0]
-      # debug_print("Closest Match:", closest_match)
-  else:
-      debug_print("No matching document found.")
-
 
 
 
@@ -325,9 +305,10 @@ def get_similar_fashion_descriptions(response_json, pg_connection, embeddingMode
 
     print("\n\nItems: ", items, end="\n\n")
 
+    item_embeddings = embeddingModel.embed_documents(items)
+
     # Loop through each item and perform a pgvector search in the PostgreSQL table
-    for item in items:
-        item_embedding = embeddingModel.embed_query(item)
+    for item, item_embedding in zip(items, item_embeddings):
         similar_items = search_similar_items(pg_connection, item_embedding)
 
         debug_print(item, end="\n\n")
@@ -387,8 +368,7 @@ def search_similar_items(pg_connection, item_embedding):
 
 
 # Generate SQL query using the AI model
-def generate_sql_via_ai(description_id, gender):
-    debug_print("description_id: ", description_id)
+def generate_sql_via_ai(gender):
     debug_print("gender: ", gender)
 
     gender_filter = ""
@@ -411,14 +391,14 @@ def generate_sql_via_ai(description_id, gender):
     - year: integer
     - gender: string (values: 'Women', 'Men', 'Boys', 'Girls', 'Unisex')
 
-    The query should retrieve one record where 'description_id' matches {description_id}
+    The query should retrieve one record where 'description_id' is a placeholder value, represented as %s,
     {gender_filter}
 
     The query should only return these fields: 'id', 'product_id', 'product_display_name'.
     The result should be ordered by 'year' in descending order and limited to 1 record.
 
     Provide only the SQL query in plain text, without any explanation, formatting or new lines.
-"""
+    """
 
     debug_print(instruction)
 
@@ -431,17 +411,15 @@ def generate_sql_via_ai(description_id, gender):
     )
 
     sql_query = completion.choices[0].message.content
-    debug_print(sql_query)
+    print(f"\n{sql_query}\n")
 
     return sql_query
 
 
-def retrieve_product(conn, description_id, gender):
-    sql_query = generate_sql_via_ai(description_id, gender)
-
+def retrieve_product(conn, sql_query, description_id):
     # Execute the AI-generated SQL query, using dict_row to return results as a dictionary
     with conn.cursor(row_factory=psycopg.rows.dict_row) as cur:
-        cur.execute(sql_query)
+        cur.execute(sql_query, (description_id,))
         result = cur.fetchone()
 
     # Return result as a dictionary, or None if no record is found
@@ -452,6 +430,9 @@ def retrieve_product(conn, description_id, gender):
 def get_similar_fashion_products(conn, search_results, gender):
     product_suggestions = []
     
+    # Generate the SQL query once
+    sql_query = generate_sql_via_ai(gender)
+
     for result in search_results:
         item = result["item"]
         similar_items = result["similar_items"]
@@ -460,7 +441,7 @@ def get_similar_fashion_products(conn, search_results, gender):
         if similar_items:
             for description_id in similar_items:
                 # Try to retrieve the product based on description_id and gender
-                product = retrieve_product(conn, description_id, gender)
+                product = retrieve_product(conn, sql_query, description_id)
 
                 # If a valid product is found, break the loop and return it
                 if product:
@@ -468,6 +449,7 @@ def get_similar_fashion_products(conn, search_results, gender):
                         "item": item,
                         "suggestion": product
                     })
+
                     break
 
     return product_suggestions  # Return the list of product suggestions

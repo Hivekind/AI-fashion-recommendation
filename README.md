@@ -165,3 +165,12 @@ python -m spacy download en_core_web_sm
 ```
 
 The en_core_web_sm model gets installed as a package in your Python environment. It is typically downloaded and stored in the site-packages directory of your Python environment. This package can be loaded directly using spacy.load('en_core_web_sm').
+
+
+## start python web server
+
+```sh
+python app.py
+```
+
+Then open the browser and go to http://localhost:5000/
