@@ -109,25 +109,25 @@ SELECT * FROM items ORDER BY embedding <-> '[3,1,2]' LIMIT 5;
 
 ## postgres
 
-1. disable pager
-```sh
-\pset pager off
-```
-
-
-2. SQL
+### use pgVector extension
 
 ```sql
 \c sales_data
 
--- products table: add description column
+-- add pgvector extension
+CREATE EXTENSION IF NOT EXISTS vector;
+```
+
+### products table
+
+```sql
+\c sales_data
+
+--  add description column
 ALTER TABLE products ADD COLUMN description text;
 
 UPDATE products
 SET description = CONCAT(base_colour, ' color ', article_type, ' for ', gender, ', ', usage, ', ', season);
-
--- add pgvector extension
-CREATE EXTENSION IF NOT EXISTS vector;
 
 -- new table to store descriptions embedding
 CREATE TABLE product_descriptions (
@@ -154,6 +154,37 @@ WHERE products.description = pd.description;
 ALTER TABLE products
 ADD CONSTRAINT fk_product_description
 FOREIGN KEY (description_id) REFERENCES product_descriptions(id);
+```
+
+### fashion_qa table
+
+```sql
+\c sales_data
+
+-- add qa column
+ALTER TABLE fashion_qa
+ADD COLUMN qa TEXT;
+
+-- populate qa column
+UPDATE fashion_qa
+SET qa = '[Question]' || question || '[Answer]' || answer;
+
+-- add embedding column
+ALTER TABLE fashion_qa
+ADD COLUMN qa_embedding VECTOR(512);
+
+-- delete redundant rows with same question + answer
+-- if there are multiple rows with same question and answer, keep only one
+DELETE FROM fashion_qa
+WHERE id IN (
+  SELECT id
+  FROM (
+    SELECT id, ROW_NUMBER() OVER (PARTITION BY qa ORDER BY id) AS rn
+    FROM fashion_qa
+  ) t
+  WHERE t.rn > 1
+);
+
 ```
 
 

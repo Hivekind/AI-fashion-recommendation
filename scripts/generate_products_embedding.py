@@ -56,14 +56,7 @@ def generate_and_store_embeddings():
                     # Commit the update for each row
                     conn.commit()
 
-
-                    # SY: testing .....
-                    # i += 1
-                    # if i == 10:
-                    #     print("Processed 3 records, exiting.")
-                    #     break  # Exit after processing 3 rows
-                      
-                  # Output the total tokens used after the loop completes
+                # Output the total tokens used after the loop completes
                 print(f"Total tokens used: {total_tokens_used}")
 
 

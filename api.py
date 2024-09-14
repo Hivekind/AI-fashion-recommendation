@@ -1,6 +1,4 @@
 from langchain_openai import OpenAIEmbeddings
-from langchain_mongodb import MongoDBAtlasVectorSearch
-from pymongo import MongoClient
 from langchain_openai import ChatOpenAI
 from langchain_core.output_parsers import StrOutputParser
 from langchain_core.runnables import RunnablePassthrough
@@ -13,9 +11,11 @@ import psycopg
 import json
 import params
 from flask import url_for
+from postgres_retriever import FashionQARetriever
+
 
 # Global debug mode flag
-debug_mode = False  # Set to False to disable debug printing
+debug_mode = True  # Set to False to disable debug printing
 
 
 # Filter out the UserWarning from langchain
@@ -25,8 +25,6 @@ mongodb_conn_string = os.getenv("MONGODB_CONN_STRING")
 
 ai_model = params.ai_model
 vector_dimension = params.vector_dimension
-index_name = params.index_name
-
 
 def debug_print(*args, **kwargs):
     """Custom debug print function that behaves like print() but only prints when debug_mode is True."""
@@ -35,63 +33,63 @@ def debug_print(*args, **kwargs):
 
 
 def process_user_query(query):
-  debug_print(f"User question: {query}\n")
+    debug_print(f"User question: {query}\n")
 
-  llm = ChatOpenAI(model="gpt-4o-mini")
+    llm = ChatOpenAI(model="gpt-4o-mini")
 
-  # openAI embedding model
-  embeddingModel = OpenAIEmbeddings(model=ai_model, dimensions=vector_dimension)
+    # openAI embedding model
+    embedding_model = OpenAIEmbeddings(model=ai_model, dimensions=vector_dimension)
 
-  first_response = first_RAG_chain(query, llm, embeddingModel)
+    # Use `with` to manage the PostgreSQL connection
+    with psycopg.connect(
+        dbname="sales_data",
+        user="postgres",
+        password="example",
+        host="localhost",
+        port="5432"
+    ) as pg_connection:
+        # The connection will be automatically closed when the block is exited
+        first_response = first_RAG_chain(query, llm, embedding_model, pg_connection)
 
-  second_response = second_RAG_chain(first_response, llm)
+        second_response = second_chain(first_response, llm)
 
-  final_response = process_fashion_suggestion(first_response, second_response, embeddingModel)
+        final_response = process_fashion_suggestion(first_response, second_response, embedding_model, pg_connection)
 
-  return final_response
+    return final_response
 
 
 
 ############################
-# 1st RAG chain: MongoDBAtlasVectorSearch -> format_docs -> prompt -> llm -> StrOutputParser
+# 1st RAG chain: PgVector Similarity Search -> format_docs -> prompt -> llm -> StrOutputParser
 ############################
 
-def first_RAG_chain(query, llm, embeddingModel):
-  # Connect to MongoDB Atlas
-  mongo_client = MongoClient(mongodb_conn_string)
-  db = mongo_client[params.db_name]
-  collection = db[params.collection_name]
+def first_RAG_chain(query, llm, embedding_model, pg_connection):
+    # custome fashion qa retriever from postgres
+    retriever = FashionQARetriever(
+        conn=pg_connection,
+        table="fashion_qa",
+        embedding_field="qa_embedding",
+        text_field="qa",
+        embedding_model=embedding_model,
+        top_k=4  # Fetch top 4 results
+    )
 
-  # Initialize MongoDBAtlasVectorSearch with correct keys
-  vectorStore = MongoDBAtlasVectorSearch(
-      collection=collection,
-      embedding=embeddingModel,  # Your embedding model
-      text_key="text",  # Field in MongoDB for the text you want to retrieve
-      embedding_key="embedding",  # Field in MongoDB for the stored embeddings
-      index_name=index_name,  # Name of Vector Index in MongoDB Atlas
-      relevance_score_fn="cosine"  # Use cosine similarity
-  )
+    prompt = get_first_prompt()
 
-  search_kwargs = {
-      "include_scores": True,
-  }
-  retriever = vectorStore.as_retriever(search_kwargs=search_kwargs)
+    first_rag_chain = (
+        {"context": retriever | format_docs, "question": RunnablePassthrough()}
+        | prompt
+        | llm
+        | StrOutputParser()
+    )
 
-  first_rag_chain = (
-      {"context": retriever | format_docs, "question": RunnablePassthrough()}
-      | prompt
-      | llm
-      | StrOutputParser()
-  )
+    first_response = first_rag_chain.invoke(query)
 
-  first_response = first_rag_chain.invoke(query)
-  mongo_client.close()
+    debug_print("\n First RAG Chain Response:")
+    debug_print("-------------------")
+    debug_print(first_response)
 
-  debug_print("\n First RAG Chain Response:")
-  debug_print("-------------------")
-  debug_print(first_response)
-
-  return first_response
+    return first_response
 
 
 
@@ -99,62 +97,52 @@ def first_RAG_chain(query, llm, embeddingModel):
 # 2nd RAG chain: RunnablePassthrough -> second_prompt -> llm -> StrOutputParser
 ############################
 
-def second_RAG_chain(first_response, llm):
-  second_prompt = get_second_prompt()
+def second_chain(first_response, llm):
+    prompt = get_second_prompt()
 
-  second_rag_chain = (
-      {"context": RunnablePassthrough()}
-      | second_prompt
-      | llm
-      | StrOutputParser()
-  )
+    chain = (
+        {"context": RunnablePassthrough()}
+        | prompt
+        | llm
+        | StrOutputParser()
+    )
 
-  second_response = second_rag_chain.invoke(first_response)
+    response = chain.invoke(first_response)
 
-  debug_print("\n Second RAG Chain Response:")
-  debug_print("-------------------")
-  debug_print(second_response)
-  
-  return second_response
+    debug_print("\n Second Chain Response:")
+    debug_print("-------------------")
+    debug_print(response)
+
+    return response
 
 
 ############################
 # process the fashion suggestion
 ############################
 
-def process_fashion_suggestion(first_response, second_response, embeddingModel):
-  # Parse the JSON response
-  response_data = json.loads(second_response)
-  gender = response_data.get("gender")
+def process_fashion_suggestion(first_response, second_response, embeddingModel, pg_connection):
+    # Parse the JSON response
+    response_data = json.loads(second_response)
+    gender = response_data.get("gender")
 
-  # not fashion suggestion related, return as is
-  if response_data.get("is_fashion_suggestion") == "no":
-      print(first_response)
-      return { "response" : first_response }
+    # not fashion suggestion related, return as is
+    if response_data.get("is_fashion_suggestion") == "no":
+        print(first_response)
+        return { "response" : first_response }
 
-  pg_connection = psycopg.connect(
-      dbname="sales_data",
-      user="postgres",
-      password="example",
-      host="localhost",
-      port="5432"
-  )
+    # Step 1: Vector embedding search in product_descriptions table
+    search_results = get_similar_fashion_descriptions(second_response, pg_connection, embeddingModel)
 
-  # Step 1: Vector embedding search in product_descriptions table
-  search_results = get_similar_fashion_descriptions(second_response, pg_connection, embeddingModel)
+    # Step 2: Product lookup in products table based on description_id from step 1
+    product_suggestions = get_similar_fashion_products(pg_connection, search_results, gender)
 
-  # Step 2: Product lookup in products table based on description_id from step 1
-  product_suggestions = get_similar_fashion_products(pg_connection, search_results, gender)
+    # Gather the suggested product names
+    suggestions = [suggestion.get("suggestion") for suggestion in product_suggestions]
 
-  pg_connection.close()
+    final_response = format_response(first_response, suggestions)
+    debug_print(final_response)
 
-  # Gather the suggested product names
-  suggestions = [suggestion.get("suggestion") for suggestion in product_suggestions]
-
-  final_response = format_response(first_response, suggestions)
-  debug_print(final_response)
-
-  return final_response
+    return final_response
 
 
 # Format the response with the assistant's response and product suggestions
@@ -169,7 +157,6 @@ def format_response(first_response, suggestions):
     final_response["items"] = []
     
     for idx, suggestion in enumerate(suggestions, 1):
-        # SY: TODO: need this to show product image ....
         product_id = suggestion.get("product_id")
 
         product_display_name = suggestion.get("product_display_name")
@@ -180,15 +167,6 @@ def format_response(first_response, suggestions):
         })
 
     return final_response
-
-
-
-
-
-
-
-
-
 
 
 def get_first_prompt():
@@ -213,9 +191,6 @@ def get_first_prompt():
     chat_prompt = ChatPromptTemplate.from_messages([human_message_prompt])
 
     return chat_prompt
-
-prompt = get_first_prompt()
-
 
 
 def get_second_prompt():
@@ -277,12 +252,12 @@ def get_second_prompt():
 
 
 def format_docs(docs):
-    # debug_print("\nRetriver:")
-    # debug_print("---------------")
+    debug_print("\nRetriever:")
+    debug_print("---------------")
 
-    # for i, doc in enumerate(docs):
-    #     debug_print(f"Doc {i+1}: {doc.page_content}\n\n")
-    #     debug_print(doc.metadata, end="\n\n\n")
+    for i, doc in enumerate(docs):
+        debug_print(f"Doc {i+1}: {doc.page_content}\n\n")
+        debug_print(doc.metadata, end="\n\n\n")
 
     return "\n\n".join(
       [f"{doc.page_content}" for doc in docs]
@@ -356,8 +331,8 @@ def search_similar_items(pg_connection, item_embedding):
 
             debug_print(results)
 
-            # with cosine distance > 0.6, the items appear irrelevant, so we filter them out
-            similar_items = [row['id'] for row in results if row['distance'] <= 0.6]
+            # with cosine distance > 0.7, the items appear irrelevant, so we filter them out
+            similar_items = [row['id'] for row in results if row['distance'] <= 0.7]
 
             return similar_items
 

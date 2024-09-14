@@ -14,7 +14,6 @@ def find_malformed_rows(csv_file):
 
     return malformed_rows
 
-# Replace 'path/to/your/styles.csv' with the actual path to your CSV file
 csv_file = 'sql-init-scripts/dataset/products.csv'
 malformed_rows = find_malformed_rows(csv_file)
 
