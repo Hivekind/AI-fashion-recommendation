@@ -16,7 +16,7 @@ def generate_and_store_embeddings_for_fashion_qa():
     try:
         # Connect to PostgreSQL using psycopg3
         with psycopg.connect(
-            dbname="sales_data",
+            dbname="fashion_data",
             user="postgres",
             password="example",
             host="localhost",

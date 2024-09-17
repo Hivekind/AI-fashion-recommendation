@@ -1,5 +1,5 @@
 from flask import Flask, request, jsonify, render_template
-from api import process_user_query  # Import the function
+from api import process_user_query
 
 app = Flask(__name__)
 
@@ -17,4 +17,5 @@ def query():
 
 
 if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=5000, debug=True)  # Change here
+    # Run the app, you can access it at http://localhost:5000/
+    app.run(host='0.0.0.0', port=5000, debug=True)

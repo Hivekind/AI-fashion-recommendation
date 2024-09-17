@@ -42,7 +42,7 @@ def process_user_query(query):
 
     # Use `with` to manage the PostgreSQL connection
     with psycopg.connect(
-        dbname="sales_data",
+        dbname="fashion_data",
         user="postgres",
         password="example",
         host="localhost",
@@ -276,9 +276,16 @@ def get_similar_fashion_descriptions(response_json, pg_connection, embeddingMode
 
     # Extract items from the response
     items = response_data.get("items", [])
-    search_results = []
+    gender = response_data.get("gender")
+
+    # Check if gender is either 'male' or 'female'
+    if gender in ['male', 'female']:
+        # Update each item by concatenating it with the gender
+        items = [f"{item} for {gender}" for item in items]
 
     print("\n\nItems: ", items, end="\n\n")
+
+    search_results = []
 
     item_embeddings = embeddingModel.embed_documents(items)
 

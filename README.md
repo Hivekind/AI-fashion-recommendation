@@ -1,220 +1,174 @@
-## Description
-We'll build an **AI fashion assistant**, using a fashion shop dataset from HuggingFace for indexing, and set up a RAG chain to process user queries and generate responses.
+# Prerequisites
 
-### Retrieval-Augmented Generation (RAG)
-RAG a technique that enhances the knowledge of language models by integrating additional data. A RAG application has two main components:
+* [Git LFS](https://docs.github.com/en/repositories/working-with-files/managing-large-files/installing-git-large-file-storage)
 
-#### 1. Indexing:
-Ingest and index data from a specific source, typically done offline.
+We use it to manage products images from the products dataset. Anyone cloning this repo must install Git LFS first, then clone the repo.
 
-#### 2. Retrieval and Generation:
-During runtime, process the user's query, retrieve relevant data, and generate a response.
-
-The data used in this project is the Fashion Shop Dataset from HuggingFace. The data consists of questions and answers related to fashion. The data is stored in MongoDB Atlas and the embeddings are generated using LangChain. The user query is passed to LangChain to generate an embedding and then the most similar data is retrieved from MongoDB Atlas.
-
-- Project: Shopping Assistant
-- Dataset: [Fashion Shop Dataset](https://huggingface.co/datasets/Quangnguyen711/Fashion_Shop_Consultant) from HuggingFace
-
-
-## Prerequisites
-* [MongoDB Atlas Subscription](https://cloud.mongodb.com/) (Free Tier is fine)
 * Open AI [API key](https://platform.openai.com/account/api-keys)
-* LangChain [API key](https://docs.smith.langchain.com/)
+
+We use OpenAI model to generate embedding and as LLM.
 
 
-## Quick Start Steps
-- Setup env var for OpenAI API key and MongoDB connection string
-```zsh
+# Fashion AI Assistant Chat App
+
+This is an AI-powered Fashion Assistant chat app that allows users to ask questions about shop policies or request product recommendations. The assistant leverages previous fashion-related Q&A data and intelligently suggests fashion products based on user queries.
+
+The app operates in three main stages:
+
+1. User Query: The user submits a question related to fashion products or shop policies.
+
+2. Contextual Response Generation: The AI processes the question and retrieves relevant information from past Q&A data, providing a contextual answer to the user.
+
+3. Fashion Item Recommendations: If the user's query relates to fashion products, the assistant analyzes the response and suggests relevant fashion items. These recommendations are drawn from a separate product dataset that is matched to the query context.
+
+To illustrate this archicture, please refer the [flow diagram](flow_diagram/flow_diagram.html).
+
+By combining a large Q&A dataset with a general fashion product dataset, the assistant provides informative answers and personalized product suggestions. For more details on the data structure, refer to the subsequent sections.
+
+# Quick Start Steps
+
+## First time set up
+
+1. Set up environment variable for OpenAI API key
+```sh
 export OPENAI_API_KEY=<your-api-key>
-export MONGODB_CONN_STRING=<your-conn-string>
 ```
 
-- Setup env var for LangChain API key and tracing, required for: `hub.pull(...)` in the script
-```zsh
-export LANGCHAIN_TRACING_V2=true
-export LANGCHAIN_API_KEY=<your-api-key>
+2. bring up PostgreSQL docker container
+```sh
+docker compose up -d
 ```
 
-- Create a new Python environment
-```zsh
+3. Run the Database Setup Script
+
+To set up the database for the first time (creating the `fashion_data` database, installing the `pgvector` extension, and restoring the dump file), run the following command:
+
+```sh
+docker compose exec db /bin/bash /init-scripts/01_restore_dump.sh
+```
+
+4. Create python virtual environment and install dependencies
+```sh
+# create python virtual env
 python3 -m venv env
-```
 
-- Activate the new Python environment
-```zsh
+# activate the env
 source env/bin/activate
-```
 
-- Install the requirements
-```zsh
+# install dependencies
 pip3 install -r requirements.txt
 ```
 
-### 1. Indexing:
-
-Embedding is generated from the combination of `question` + `answer` fields. This is based on the assumption that we want to match user query against both the question and answer fields in the database. The embedding is stored in MongoDB and index is created for vector search.
-
-#### Load, Transform, Embed and Store
-
-Run the below script:
-
-```zsh
-python3 ingest.py
-```
-
-### 2. Retrieval and Generation:
-
-Run the below script, by passing your prompt as an argument.
-
-```zsh
-python3 query.py  -q "What is the store policy for returns?"
-```
-
-
-## Google Colab Notebook
-You can also run the code in a Google Colab notebook. The notebook is available [here](RAG_fashion_langchain_openai_mongodb.ipynb).
-
-
-
-## Resources
-* [MongoDB Atlas](https://cloud.mongodb.com/)
-* [Open AI API key](https://platform.openai.com/account/api-keys)
-* [LangChain Doc](https://python.langchain.com)
-* [LangChain API key](https://docs.smith.langchain.com/)
-* [MongoDB Atlas module](https://python.langchain.com/docs/modules/data_connection/vectorstores/integrations/mongodb_atlas)  
-* [Open AI module](https://python.langchain.com/docs/modules/data_connection/vectorstores/integrations/openai)
-
-
-## pgVector
-
-* [pgVector](https://github.com/pgvector/pgvector)
-
-```
-CREATE EXTENSION vector;
-CREATE TABLE items (id bigserial PRIMARY KEY, embedding vector(3));
-INSERT INTO items (embedding) VALUES ('[1,2,3]'), ('[4,5,6]');
-SELECT * FROM items ORDER BY embedding <-> '[3,1,2]' LIMIT 5;
-```
-
-
-## Dataset
-
-* [sales-transaction-dataset-with-product-details](https://www.kaggle.com/datasets/ishanshrivastava28/sales-transaction-dataset-with-product-details)
-
-* [fashion-trend-dataset](https://www.kaggle.com/datasets/fashionworldda/fashion-trend-dataset)
-
-* [fashion-shop-consultant](https://huggingface.co/datasets/Quangnguyen711/Fashion_Shop_Consultant)
-
-
-
-## postgres
-
-### use pgVector extension
-
-```sql
-\c sales_data
-
--- add pgvector extension
-CREATE EXTENSION IF NOT EXISTS vector;
-```
-
-### products table
-
-```sql
-\c sales_data
-
---  add description column
-ALTER TABLE products ADD COLUMN description text;
-
-UPDATE products
-SET description = CONCAT(base_colour, ' color ', article_type, ' for ', gender, ', ', usage, ', ', season);
-
--- new table to store descriptions embedding
-CREATE TABLE product_descriptions (
-    id SERIAL PRIMARY KEY,
-    description TEXT NOT NULL UNIQUE,
-    embedding VECTOR(512)
-);
-
--- populate table with unique descriptions
-INSERT INTO product_descriptions (description)
-SELECT DISTINCT description
-FROM products
-WHERE description IS NOT NULL
-ON CONFLICT (description) DO NOTHING;
-
--- create FK in products table
-ALTER TABLE products ADD COLUMN description_id INTEGER;
-
-UPDATE products
-SET description_id = pd.id
-FROM product_descriptions pd
-WHERE products.description = pd.description;
-
-ALTER TABLE products
-ADD CONSTRAINT fk_product_description
-FOREIGN KEY (description_id) REFERENCES product_descriptions(id);
-```
-
-### fashion_qa table
-
-```sql
-\c sales_data
-
--- add qa column
-ALTER TABLE fashion_qa
-ADD COLUMN qa TEXT;
-
--- populate qa column
-UPDATE fashion_qa
-SET qa = '[Question]' || question || '[Answer]' || answer;
-
--- add embedding column
-ALTER TABLE fashion_qa
-ADD COLUMN qa_embedding VECTOR(512);
-
--- delete redundant rows with same question + answer
--- if there are multiple rows with same question and answer, keep only one
-DELETE FROM fashion_qa
-WHERE id IN (
-  SELECT id
-  FROM (
-    SELECT id, ROW_NUMBER() OVER (PARTITION BY qa ORDER BY id) AS rn
-    FROM fashion_qa
-  ) t
-  WHERE t.rn > 1
-);
-
-```
-
-
-
-3. NLP: download en_core_web_sm model
-
-```sh
-python -m spacy download en_core_web_sm
-```
-
-The en_core_web_sm model gets installed as a package in your Python environment. It is typically downloaded and stored in the site-packages directory of your Python environment. This package can be loaded directly using spacy.load('en_core_web_sm').
-
-
-## start python web server
-
+5. start python backend server, and access it at: http://localhost:5000/
 ```sh
 python app.py
 ```
 
-Then open the browser and go to http://localhost:5000/
+## Subsequent run
 
+```sh
+docker compose up -d
+
+source env/bin/activate
+
+python app.py
+```
+
+# Detailed Description
+
+## Dataset
+
+We use these 2 datasets for the app:
+
+1. [Fashion Shop's Q&A](https://huggingface.co/datasets/Quangnguyen711/Fashion_Shop_Consultant)
+
+This contains a fashion shop Q&A.
+
+
+2. [Fashion Products Dataset](https://www.kaggle.com/datasets/paramaggarwal/fashion-product-images-dataset)
+
+This contains fashion products details with images.
+
+
+In the following sections, for SQL scripts, we use `\i` to run the scripts in the PostgreSQL database. These scripts are executed within the db container.
+
+To connect to the PostgreSQL database, use the following command:
+
+```sh
+docker compose exec db bash -c "psql -U postgres fashion_data"
+```
+
+We have performed these steps to set up the datasets in PostgreSQL database (DB):
+
+### Create database and enable [pgvector](https://github.com/pgvector/pgvector) extension.
+
+We use the pgvector extension in PostgreSQL to store embedding vectors and perform efficient similarity searches.
+
+```sql
+\i /init-scripts/setup_database.sql
+```
+
+
+### Set up Fashion Shop Q&A dataset
+
+The dataset is stored in `fashion_qa` table, which contains questions and answers related to fashion. We add a new column `qa` to store the concatenated question and answer. We then create a new column `qa_embedding` to store the embeddings of the `qa` column. We also remove redundant rows with the same question and answer.
+
+```sql
+\i /init-scripts/load_fashion_qa.sql
+```
+
+```sh
+python generate_fashion_qa_embedding.py
+```
+
+
+### Set up Products dataset
+
+1. CSV data
+
+For some rows, the `productDisplayName` field contains `,`, which causes error while trying to ingest the csv into DB. We run this script to detect the occurence, then manually fix the data by replacing `,` with `-`.
+
+We have also manually fixed the data where there is mismatch between productDisplayName and other fields, eg: subCategory, acticleType, etc.
+
+```sh
+python detect_malformed_csv.py
+```
+
+The dataset is stored in `products` table. We add a new column `description` to the `products` table, and populate it with the concatenation of `base_colour`, `article_type`, `usage`, and `season` columns.
+
+We then create a new table `product_descriptions` to store unique descriptions and their embeddings. We then populate the `product_descriptions` table with unique descriptions from the `products` table and create a foreign key in the `products` table to link the `description_id` to the `product_descriptions` table.
+
+```sql
+\i /init-scripts/load_products.sql
+```
+
+Generate embeddings for the product descriptions.
+
+```sh
+python generate_products_embedding.py
+```
+
+2. Images
+
+The dataset contains all images for the products. We placed these images in `static/images` dir, so the python backend is able to serve these images to the frontend.
+
+
+### Set up PostgreSQL dump file
+
+We run this command to create a dump file for the `fashion_data` database. This dump file is used to restore the database when setting up the app for the first time.
+
+```sh
+docker compose exec db bash -c "pg_dump -U postgres -Fc fashion_data > /init-scripts/fashion_data.dump"
+```
 
 ## Managing Image Files with Git LFS
 
-We use Git LFS to manage a large number of small image files in this repository.
+We use Git LFS to manage product image files in this repository.
 
 ### Initial Setup
 - Install Git LFS:
 
-```bash
+```sh
 # for macOS
 brew install git-lfs
 
@@ -224,7 +178,7 @@ sudo apt install git-lfs
 
 - Set up Git LFS to track image files:
 
-```bash
+```sh
 # Initialize Git LFS
 git lfs install
 
@@ -235,14 +189,5 @@ git lfs track "*.jpg" "*.png" "*.gif"
 git add .gitattributes
 git add .
 git commit -m "Add images and track with Git LFS"
-
-# Push changes
 git push origin main
-```
-
-### For Cloning the Repo
-Anyone cloning this repo must install Git LFS first, then clone:
-
-```bash
-git clone <repo-url>
 ```

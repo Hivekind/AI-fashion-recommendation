@@ -11,13 +11,12 @@ tokenizer = tiktoken.encoding_for_model(ai_model)
 
 
 def generate_and_store_embeddings():
-    i = 0
     total_tokens_used = 0
 
     try:
         # Connect to PostgreSQL using psycopg3
         with psycopg.connect(
-            dbname="sales_data",
+            dbname="fashion_data",
             user="postgres",
             password="example",
             host="localhost",
