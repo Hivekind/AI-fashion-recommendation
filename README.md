@@ -85,7 +85,7 @@ We use these 2 datasets for the app:
 This contains a fashion shop Q&A.
 
 
-2. [Fashion Products Dataset](https://www.kaggle.com/datasets/paramaggarwal/fashion-product-images-dataset)
+2. [Fashion Products Dataset](https://www.kaggle.com/datasets/paramaggarwal/fashion-product-images-small)
 
 This contains fashion products details with images.
 

@@ -1,11 +1,9 @@
 argparse
 langchain>=0.0.231
-pymongo
 openai
 tiktoken
 datasets
 langchain-community
-langchain_mongodb
 langsmith
 pandas
 

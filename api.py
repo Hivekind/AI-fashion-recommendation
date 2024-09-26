@@ -21,8 +21,6 @@ debug_mode = True  # Set to False to disable debug printing
 # Filter out the UserWarning from langchain
 warnings.filterwarnings("ignore", category=UserWarning, module="langchain.chains.llm")
 
-mongodb_conn_string = os.getenv("MONGODB_CONN_STRING")
-
 ai_model = params.ai_model
 vector_dimension = params.vector_dimension
 
